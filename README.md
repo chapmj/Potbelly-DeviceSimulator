@@ -3,7 +3,7 @@
 Potbelly-DeviceSimulator is designed to simulate medical devices.  It can respond appropriately to requests and log data received.
 
 ### App-Server
-**App-Server.py** is provided as a shim to run the simulated device.  It will open a socket and loop waiting for data to be received.  Optionally, a sample ID number can be provided as an argument to product Manufacturer record messages.
+**App-Server.py** is provided as a shim to run the simulated device.  It will open a socket and loop waiting for data to be received.  Optionally, a sample ID number can be provided as an argument to generate Manufacturer record messages.
 
 **Example:**
 
