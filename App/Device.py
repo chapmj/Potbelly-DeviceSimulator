@@ -1,8 +1,6 @@
 #!/usr/bin/python
 import itertools
 import time
-from socket import socket, AF_INET, SOCK_STREAM
-import select
 import logging
 
 logging.basicConfig(level=logging.DEBUG)
@@ -16,20 +14,6 @@ CR = chr(0xD)
 LF = chr(0xA)
 
 
-def byte_str(string):
-    """Print each byte as a 2 digit base 16 value"""
-    return " ".join("{:02X}".format(ord(c)) for c in string)
-
-
-def calc_checksum(string):
-    """
-    Checksum is defined as the sum of bytes wrapped to 2 digits base 16.
-
-    :returns: a string representation of the checksum
-    """
-    return bytes('%02X' % (sum(map(ord, string)) % 256))
-
-
 class Device:
     """
     Simulates an ASTM1394 device sending and receiving messages.
@@ -38,11 +22,11 @@ class Device:
     For example, an M record to test specimen location:
     ("1H|\^&", "2M|1|101|SID123456789|20201027235959|0", "3L|1|N")
     """
-    def __init__(self, port, messages):
-        self.sock = None
-        self.conn = None
-        self.port = port
+
+    def __init__(self, socket_server, frame_prepper, messages):
+        self.socket_server = socket_server
         self.messages = messages
+        self.frame_prepper = frame_prepper
 
     @staticmethod
     def retry(func, tries):
@@ -55,44 +39,6 @@ class Device:
                 return True
 
         return False
-
-    def create_socket(self, port):
-        """Open a network socket"""
-
-        self.sock = socket(AF_INET, SOCK_STREAM)
-        self.sock.bind(('', port))
-        self.sock.listen(5)
-        self.conn, addr = self.sock.accept()
-        logging.debug("Device socket created")
-
-    def receive(self):
-        """
-        Read data from socket.
-
-        :returns data if exists, otherwise empty string
-        """
-
-        logging.debug("Inside receive")
-        data = ""
-
-        ready = select.select([self.conn], [], [], 5)
-
-        if ready[0]:
-            logging.debug("Connection has data")
-            data = self.conn.recv(4096)
-
-        if data:
-            logging.debug("Read: [" + byte_str(data) + "]")
-            logging.debug("Received: [ " + data + "]")
-
-        return data
-
-    def send(self, data):
-        """Wrapper for socket.send"""
-
-        logging.debug("Write: [" + byte_str(data) + "]")
-        self.conn.sendall(data)
-        logging.debug("Sent: [" + data + "]")
 
     def send_enq(self, tries=1):
         """
@@ -108,8 +54,8 @@ class Device:
             data_received = ""
 
             while not data_received:
-                self.send(ENQ)
-                data_received = self.receive()
+                self.socket_server.send(ENQ)
+                data_received = self.socket_server.receive()
 
             logging.debug(data_received[0] == ACK)
 
@@ -127,11 +73,11 @@ class Device:
 
         else:
             logging.info("Waiting for ENQ")
-            data_received = self.receive()
+            data_received = self.socket_server.receive()
 
             if data_received and data_received[0] == ENQ:
                 logging.debug("Got ENQ, sending ACK")
-                self.send(ACK)
+                self.socket_server.send(ACK)
                 return True
 
             if data_received and data_received[0] == ACK:
@@ -154,56 +100,23 @@ class Device:
         if tries > 1:
             return Device.retry(self.receive_message, 3)
 
-        else:
+        while True:
 
-            while True:
+            data_received = self.socket_server.receive()
 
-                data_received = self.receive()
-                logging.debug("Received: [" + byte_str(data_received) + "]")
+            if data_received and data_received[0] == STX:
+                logging.debug(data_received)
+                self.socket_server.send(ACK)
+                continue
 
-                if data_received and data_received[0] == STX:
-                    logging.debug(data_received)
-                    self.send(ACK)
-                    continue
+            elif data_received and data_received[0] == EOT:
+                return True
 
-                elif data_received and data_received[0] == EOT:
-                    return True
+            elif data_received:
+                continue
 
-                elif data_received:
-                    continue
-
-                else:
-                    return False
-
-    def send_message(self, message):
-        """
-        Sends message, wrapping with ctrl chars and checksum.
-
-        :param message: A tuple or list of ASTM frames.
-        :returns: None
-        """
-
-        logging.debug("Inside send_message")
-
-        # Send every frame in the message, await ack per frame
-        while message:
-
-            checksum = calc_checksum(message[0] + CR + ETX)
-
-            full_frame = STX + message[0] + CR + ETX + checksum + CR + LF
-
-            self.send(full_frame)
-
-            data_received = self.receive()
-
-            if data_received and data_received[0] == ACK:
-                message.pop(0)
-
-        # End of transaction
-        self.send(EOT)
-
-    def close(self):
-        self.sock.close()
+            else:
+                return False
 
     def receive_state(self):
         """
@@ -231,14 +144,24 @@ class Device:
         if self.messages:
             logging.info("Sending...")
 
-            while self.messages:
-                is_enq_accepted = self.send_enq(3)
-                if is_enq_accepted:
-                    logging.info("Sending message...")
-                    self.send_message(self.messages.pop(0))
+            framed_message = self.frame_prepper(self.messages[0])
 
-                elif is_enq_accepted and not self.messages:
-                    self.send(EOT)
+            is_enq_accepted = self.send_enq(3)
+            if is_enq_accepted:
+                logging.info("Sending message...")
+
+                # Send every frame in the message, wait for ack per frame
+                logging.debug("Inside send_message")
+                while framed_message:
+
+                    self.socket_server.send(framed_message[0])
+
+                    data_received = self.socket_server.receive()
+
+                    if data_received and data_received[0] == ACK:
+                        framed_message.pop(0)
+
+                self.socket_server.send(EOT)
 
         else:
             logging.info("No messages to send")
@@ -254,7 +177,7 @@ class Device:
         state = states.next()
 
         logging.info("Starting...")
-        self.create_socket(self.port)
+        self.socket_server.start()
 
         # Sleep necessary to prevent contention with client
         time.sleep(5)
@@ -269,7 +192,7 @@ class Device:
                     logging.debug("New State: " + state[1])
 
                 # Execute current state, signal if state is completed
-                change_state = state[0]()
+                change_state = apply(state[0])
 
         except KeyboardInterrupt:
-            self.close()
+            self.socket_server.stop()
