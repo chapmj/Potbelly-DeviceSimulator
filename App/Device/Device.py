@@ -144,7 +144,7 @@ class Device:
         if self.messages:
             logging.info("Sending...")
 
-            framed_message = self.frame_prepper(self.messages[0])
+            framed_message = self.frame_prepper.prepare_frames(self.messages[0])
 
             is_enq_accepted = self.send_enq(3)
             if is_enq_accepted:
@@ -178,6 +178,7 @@ class Device:
 
         logging.info("Starting...")
         self.socket_server.start()
+        logging.info("Socket started")
 
         # Sleep necessary to prevent contention with client
         time.sleep(5)
@@ -195,4 +196,8 @@ class Device:
                 change_state = apply(state[0])
 
         except KeyboardInterrupt:
+            logging.debug("Stopping")
+            self.socket_server.stop()
+
+        finally:
             self.socket_server.stop()

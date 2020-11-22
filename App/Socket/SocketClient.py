@@ -9,27 +9,32 @@ def byte_str(string):
     return " ".join("{:02X}".format(ord(c)) for c in string)
 
 
-class SocketServer:
-    def __init__(self, port):
+class SocketClient:
+    def __init__(self, addr, port):
         self.port = port
+        self.addr = addr
         self.sock = None
         self.conn = None
+        self.is_open = False
 
     def start(self):
         self.sock = socket(AF_INET, SOCK_STREAM)
-        self.sock.bind(('', self.port))
-        self.sock.listen(5)
-        self.conn, addr = self.sock.accept()
+        logging.debug("Socket created")
+
+        self.sock.connect((self.addr, self.port))
+        logging.debug("Socket Connected")
+        self.is_open = True
+
         logging.debug("Device socket created")
 
     def stop(self):
         self.sock.close()
+        self.is_open = False
 
     def send(self, data):
         logging.debug("Write: [" + byte_str(data) + "]")
-        self.conn.sendall(data)
+        self.sock.sendall(data)
         logging.debug("Sent: [" + data + "]")
-        pass
 
     def receive(self):
         """
@@ -41,11 +46,11 @@ class SocketServer:
         logging.debug("Inside receive")
         data = ""
 
-        ready = select.select([self.conn], [], [], 5)
+        ready = select.select([self.sock], [], [], float(5))
 
         if ready[0]:
             logging.debug("Connection has data")
-            data = self.conn.recv(4096)
+            data = self.sock.recv(4096)
 
         if data:
             logging.debug("Read: [" + byte_str(data) + "]")
